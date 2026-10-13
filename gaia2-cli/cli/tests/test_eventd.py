@@ -733,3 +733,34 @@ class TestAdapterPayload:
             "message": "[User request provided as audio]",
             "media": [_MEDIA_REF],
         }
+
+
+class TestJudgeContext:
+    """GAIA2_JUDGE_CONTEXT feeds judge-only task text into extract_oracle_data."""
+
+    def _create(self, daemon, monkeypatch):
+        import gaia2_cli.judge as judge_module
+
+        seen: dict = {}
+
+        def extract(**kwargs):
+            seen.update(kwargs)
+            return ([[{"event": 1}]], [{}], ["task"], None)
+
+        monkeypatch.setattr(judge_module, "Judge", lambda **kw: kw)
+        loader = SimpleNamespace(extract_oracle_data=extract, start_time=0.0, app_name_to_class={})
+        processor = SimpleNamespace(event_id_to_turn_idx={}, nb_turns=1)
+        daemon._create_judge(loader, processor)
+        return seen
+
+    def test_context_file_is_passed(self, daemon, monkeypatch, tmp_path):
+        ctx = tmp_path / "judge_context.json"
+        ctx.write_text(json.dumps({"version": 1, "turns": {"u0": {"text": "orig"}}}))
+        monkeypatch.setenv("GAIA2_JUDGE_CONTEXT", str(ctx))
+        assert self._create(daemon, monkeypatch)["task_texts"] == {"u0": "orig"}
+
+    def test_absent_context_changes_nothing(self, daemon, monkeypatch, tmp_path):
+        monkeypatch.delenv("GAIA2_JUDGE_CONTEXT", raising=False)
+        assert self._create(daemon, monkeypatch)["task_texts"] is None
+        monkeypatch.setenv("GAIA2_JUDGE_CONTEXT", str(tmp_path / "missing.json"))
+        assert self._create(daemon, monkeypatch)["task_texts"] is None

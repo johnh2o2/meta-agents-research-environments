@@ -125,3 +125,41 @@ def test_malformed_media_raises(tmp_path: Path, media, match: str) -> None:
     path = _write_events(tmp_path, [_user_event("u0", "x", [], media=media)])
     with pytest.raises(ValueError, match=match):
         ScenarioLoader(path)
+
+
+# ---------------------------------------------------------------------------
+# Judge context (judge-only task text)
+# ---------------------------------------------------------------------------
+
+
+def test_judge_context_overrides_only_judge_task_text(tmp_path: Path) -> None:
+    from gaia2_core.loader import read_judge_context
+
+    events = [
+        _user_event("u0", "[User request provided as audio]", [], media=[_REF]),
+        _user_event("u1", "Second turn.", ["u0"]),
+    ]
+    loader = ScenarioLoader(_write_events(tmp_path, events))
+    ctx = tmp_path / "judge_context.json"
+    ctx.write_text(json.dumps({"version": 1, "turns": {"u0": {"text": "Find the Copa file."}}}))
+
+    task_texts = read_judge_context(str(ctx))
+    assert task_texts == {"u0": "Find the Copa file."}
+    _, _, tasks, _ = loader.extract_oracle_data({"u0": 0, "u1": 1}, 2, task_texts=task_texts)
+    assert tasks == ["Find the Copa file.\n", "Second turn.\n"]
+    # The agent-facing task is untouched.
+    assert loader.task == "[User request provided as audio]"
+    # Without a context the judge sees the scenario content as before.
+    _, _, tasks, _ = loader.extract_oracle_data({"u0": 0, "u1": 1}, 2)
+    assert tasks == ["[User request provided as audio]\n", "Second turn.\n"]
+
+
+def test_read_judge_context_absent_and_malformed(tmp_path: Path) -> None:
+    from gaia2_core.loader import read_judge_context
+
+    assert read_judge_context(None) is None
+    assert read_judge_context(str(tmp_path / "missing.json")) is None
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"version": 1, "turns": {"u0": "no text key"}}))
+    with pytest.raises(ValueError):
+        read_judge_context(str(bad))

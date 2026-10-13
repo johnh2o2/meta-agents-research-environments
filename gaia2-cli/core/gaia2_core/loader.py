@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections import defaultdict, deque
 from typing import Any
@@ -107,6 +108,29 @@ def _parse_media(event_id: str, raw: Any) -> list[dict[str, str]]:
         if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
             raise ValueError(f"{where}.sha256 must be 64 lowercase hex characters")
     return [dict(ref) for ref in raw]
+
+
+def read_judge_context(path: str | None) -> dict[str, str] | None:
+    """Judge-only task texts ``{USER event id: text}`` from a judge context file.
+
+    The file is ``{"version": 1, "turns": {"<event id>": {"text": "..."}}}``.
+    Returns None when *path* is unset or names no file; raises ValueError when
+    the file is malformed.
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except OSError as e:
+        logger.warning("Judge context %s unreadable, ignoring: %s", path, e)
+        return None
+    turns = data.get("turns") if isinstance(data, dict) and data.get("version") == 1 else None
+    if not isinstance(turns, dict) or not all(
+        isinstance(t, dict) and isinstance(t.get("text"), str) for t in turns.values()
+    ):
+        raise ValueError(f"{path}: expected {{'version': 1, 'turns': {{id: {{'text': str}}}}}}")
+    return {event_id: t["text"] for event_id, t in turns.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +273,7 @@ class ScenarioLoader:
         self,
         event_id_to_turn_idx: dict[str, int],
         nb_turns: int,
+        task_texts: dict[str, str] | None = None,
     ) -> tuple[
         list[list[OracleEvent]],
         list[dict[str, list[str]]],
@@ -259,6 +284,11 @@ class ScenarioLoader:
 
         Uses the already-computed *event_id_to_turn_idx* mapping from
         ``EventProcessor.build_event_id_to_turn_idx()``.
+
+        *task_texts* (``{USER event id: text}``, see ``read_judge_context``)
+        replaces the content of the listed USER turns in the judge's task
+        text only, e.g. the original prompt of a turn sent to the agent as
+        audio. What the agent receives is unchanged.
 
         Returns:
             turn_to_oracle_events: per-turn lists of OracleEvent (topo-sorted)
@@ -321,7 +351,9 @@ class ScenarioLoader:
                 and ev.action.function_name == "send_message_to_agent"
             ):
                 tidx = event_id_to_turn_idx.get(ev.event_id, 0)
-                content = ev.action.args.get("content", "")
+                content = (task_texts or {}).get(
+                    ev.event_id, ev.action.args.get("content", "")
+                )
                 if content:
                     turn_idx_to_task[tidx] += content + "\n"
 

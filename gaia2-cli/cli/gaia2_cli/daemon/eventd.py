@@ -288,10 +288,16 @@ class Gaia2EventDaemon:
         immediately instead of silently running without a judge.
         """
         from gaia2_cli.judge import Judge, create_litellm_engine
+        from gaia2_core.loader import read_judge_context
 
+        # Judge-only task text for turns the agent got as audio or ASR text.
+        task_texts = read_judge_context(os.environ.get("GAIA2_JUDGE_CONTEXT"))
+        if task_texts:
+            logger.info("Judge context: task text for %d user turn(s)", len(task_texts))
         oracle_data = loader.extract_oracle_data(
             event_id_to_turn_idx=processor.event_id_to_turn_idx,
             nb_turns=processor.nb_turns,
+            task_texts=task_texts,
         )
         turn_oracle_events, turn_oracle_graph, tasks, _ = oracle_data
 
