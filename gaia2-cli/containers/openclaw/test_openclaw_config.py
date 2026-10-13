@@ -375,6 +375,42 @@ def test_invalid_context_window_override_is_rejected(value: str) -> None:
         )
 
 
+def test_max_tokens_override_caps_openai_compat_model_output() -> None:
+    env = {
+        "PROVIDER": "openai-compat",
+        "API_KEY": "k",
+        "MODEL": "qwen3-omni",
+        "BASE_URL": "http://127.0.0.1:8091/v1",
+    }
+    default = openclaw_config.generate_setup(env, now=FIXED_NOW)
+    capped = openclaw_config.generate_setup(
+        {**env, "OPENCLAW_MAX_TOKENS": "8192"}, now=FIXED_NOW
+    )
+
+    def model_of(outputs):
+        return outputs.openclaw_config["models"]["providers"]["openai-compat"]["models"][0]
+
+    assert model_of(default)["maxTokens"] == 65535
+    assert model_of(capped)["maxTokens"] == 8192
+    model_of(capped)["maxTokens"] = 65535
+    assert capped.openclaw_config == default.openclaw_config
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "lots"])
+def test_invalid_max_tokens_override_is_rejected(value: str) -> None:
+    with pytest.raises(openclaw_config.SetupError, match="OPENCLAW_MAX_TOKENS"):
+        openclaw_config.generate_setup(
+            {
+                "PROVIDER": "openai-compat",
+                "API_KEY": "k",
+                "MODEL": "m",
+                "BASE_URL": "http://127.0.0.1:8091/v1",
+                "OPENCLAW_MAX_TOKENS": value,
+            },
+            now=FIXED_NOW,
+        )
+
+
 def test_exec_commands_time_out_after_a_minute_by_default() -> None:
     outputs = openclaw_config.generate_setup(
         {"PROVIDER": "anthropic", "API_KEY": "anthropic-key"},

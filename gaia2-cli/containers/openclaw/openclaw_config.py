@@ -271,7 +271,7 @@ def resolve_provider_setup(env: Mapping[str, str]) -> ProviderSetup:
             model,
             reasoning=True,
             context_window=DEFAULT_OPENAI_COMPAT_CONTEXT_WINDOW,
-            max_tokens=DEFAULT_OPENAI_COMPAT_MAX_TOKENS,
+            max_tokens=resolve_max_tokens(env) or DEFAULT_OPENAI_COMPAT_MAX_TOKENS,
         )
     else:
         raise SetupError(f"Unknown provider '{provider}'")
@@ -310,6 +310,28 @@ def resolve_context_tokens(env: Mapping[str, str]) -> int | None:
     if tokens < 1:
         raise SetupError(
             f"OPENCLAW_CONTEXT_WINDOW must be a positive integer, got {value!r}"
+        )
+    return tokens
+
+
+def resolve_max_tokens(env: Mapping[str, str]) -> int | None:
+    """Return the model output cap override from ``OPENCLAW_MAX_TOKENS``.
+
+    OpenClaw requests ``min(maxTokens, 32000)`` output tokens per call, and
+    vLLM rejects a prompt longer than ``max_model_len`` minus that, so a
+    small served window (e.g. 65,536) needs a smaller cap to leave room for
+    the conversation.
+    """
+    value = first_nonempty(env.get("OPENCLAW_MAX_TOKENS"))
+    if not value:
+        return None
+    try:
+        tokens = int(value)
+    except ValueError:
+        tokens = 0
+    if tokens < 1:
+        raise SetupError(
+            f"OPENCLAW_MAX_TOKENS must be a positive integer, got {value!r}"
         )
     return tokens
 
