@@ -43,6 +43,13 @@ The runner treats each container as the same abstract backend: send the initial
 task over `/notify`, poll `/messages` or `/status`, and then collect artifacts
 after completion.
 
+If `gaia2-eventd` cannot run the scenario (for example its judge fails to
+load), it stops with `"status": "error"` and the reason in an `"error"` field
+of `daemon_status.json`. The runner reports such a scenario as an error with
+that reason (`Daemon error: gaia2-eventd setup failed: …`) as soon as it reads
+the status, instead of waiting out the activity timeout. An adapter that still
+reports no daemon status 120 s after becoming ready is treated the same way.
+
 ## Commands
 
 | Command | Use it for |

@@ -100,7 +100,8 @@ These are the endpoints the runner talks to:
 - `GET /messages?after=<seq>` polls buffered assistant responses
 - `GET /events` streams responses over SSE
 - `GET /health` reports connection status to the gateway
-- `GET /status` reports daemon progress
+- `GET /status` reports daemon progress, and in `error` why the daemon
+  stopped when it could not run the scenario
 
 Example manual probe:
 
@@ -198,5 +199,8 @@ Common pitfalls:
 - if the gateway never comes up, inspect `/tmp/entrypoint.log`
 - if the agent is healthy but the run never finishes, inspect
   `/tmp/gaia2-eventd.log` for missing turn boundaries
+- if a run fails with `Daemon error: gaia2-eventd setup failed: …`, the daemon
+  died before it sent the task; the full traceback is in
+  `/tmp/gaia2-eventd.log` (`eventd.log` in the artifact directory)
 - if outbound HTTPS fails only under faketime, check the TLS proxy path and the
   host-side proxy/CA wiring from the runner
