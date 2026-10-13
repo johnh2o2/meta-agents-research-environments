@@ -485,7 +485,7 @@ class TestHandleNotifyMedia:
         assert plain == []
         assert seen == [("x", [_MEDIA_REF])]
 
-    @pytest.mark.parametrize("media", [{"asset_id": "a"}, ["a_x"], [{"mime_type": "audio/wav"}]])
+    @pytest.mark.parametrize("media", [{"asset_id": "a"}, [], ["a_x"], [{"mime_type": "audio/wav"}]])
     def test_malformed_media_is_400(self, media) -> None:
         async def send_turn(text, media):  # pragma: no cover - must not run
             raise AssertionError("send_turn called for malformed media")

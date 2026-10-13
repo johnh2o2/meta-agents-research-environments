@@ -163,3 +163,6 @@ def test_read_judge_context_absent_and_malformed(tmp_path: Path) -> None:
     bad.write_text(json.dumps({"version": 1, "turns": {"u0": "no text key"}}))
     with pytest.raises(ValueError):
         read_judge_context(str(bad))
+    bad.write_text("{not json")
+    with pytest.raises(ValueError):
+        read_judge_context(str(bad))

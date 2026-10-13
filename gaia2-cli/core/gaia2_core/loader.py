@@ -114,17 +114,17 @@ def read_judge_context(path: str | None) -> dict[str, str] | None:
     """Judge-only task texts ``{USER event id: text}`` from a judge context file.
 
     The file is ``{"version": 1, "turns": {"<event id>": {"text": "..."}}}``.
-    Returns None when *path* is unset or names no file; raises ValueError when
-    the file is malformed.
+    Returns None when *path* is unset or names no file. An unreadable or
+    malformed file raises, so the judge never silently grades against the
+    agent-facing text instead.
     """
-    if not path or not os.path.isfile(path):
+    if not path:
         return None
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except OSError as e:
-        logger.warning("Judge context %s unreadable, ignoring: %s", path, e)
+    if not os.path.isfile(path):
+        logger.warning("Judge context %s not found; judging scenario text", path)
         return None
+    with open(path) as f:
+        data = json.load(f)
     turns = data.get("turns") if isinstance(data, dict) and data.get("version") == 1 else None
     if not isinstance(turns, dict) or not all(
         isinstance(t, dict) and isinstance(t.get("text"), str) for t in turns.values()

@@ -298,7 +298,7 @@ async def handle_notify(
                 writer, 400, {"ok": False, "error": "This backend does not accept media"}
             )
             return
-        if not isinstance(media, list) or not all(
+        if not isinstance(media, list) or not media or not all(
             isinstance(ref, dict) and isinstance(ref.get("asset_id"), str)
             for ref in media
         ):
