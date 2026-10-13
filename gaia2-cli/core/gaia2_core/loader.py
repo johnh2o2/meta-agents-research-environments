@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import defaultdict, deque
 from typing import Any
 
@@ -76,6 +77,39 @@ def _parse_args(args_list: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Media references (event-level "media" key of a USER turn)
+# ---------------------------------------------------------------------------
+
+_MEDIA_REF_KEYS = {"asset_id", "mime_type", "sha256"}
+# Must match the [[gaia2-media:<asset_id>]] marker that the OpenClaw fetch
+# shim resolves (containers/openclaw/launch_request_utils.mjs).
+_ASSET_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _parse_media(event_id: str, raw: Any) -> list[dict[str, str]]:
+    """Validate an event's ``media`` list; raises ValueError naming the entry."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"Event {event_id}: 'media' must be a list")
+    for idx, ref in enumerate(raw):
+        where = f"Event {event_id}: media[{idx}]"
+        if not isinstance(ref, dict) or set(ref) != _MEDIA_REF_KEYS:
+            raise ValueError(
+                f"{where} must have exactly the keys asset_id, mime_type, sha256"
+            )
+        asset_id, sha256 = ref["asset_id"], ref["sha256"]
+        if not isinstance(asset_id, str) or not _ASSET_ID_RE.fullmatch(asset_id):
+            raise ValueError(f"{where}.asset_id must match [A-Za-z0-9._-]{{1,128}}")
+        if ref["mime_type"] != "audio/wav":
+            raise ValueError(f"{where}.mime_type must be 'audio/wav'")
+        if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+            raise ValueError(f"{where}.sha256 must be 64 lowercase hex characters")
+    return [dict(ref) for ref in raw]
+
+
+# ---------------------------------------------------------------------------
 # ScenarioLoader
 # ---------------------------------------------------------------------------
 
@@ -108,6 +142,8 @@ class ScenarioLoader:
 
         # Extract task
         self.task: str | None = self._extract_task()
+        # Media refs of the initial user turn ([] for text-only scenarios)
+        self.task_media: list[dict[str, str]] = self._extract_task_media()
 
         # Metadata
         metadata = data.get("metadata", {}).get("definition", {})
@@ -188,6 +224,22 @@ class ScenarioLoader:
                     if not ev.dependency_ids:
                         return ev.action.args.get("content")
         return fallback
+
+    def _extract_task_media(self) -> list[dict[str, str]]:
+        """Media refs of the initial USER send_message_to_agent event.
+
+        ``media`` is an event-level key, a sibling of ``action``, on the
+        event with no dependencies (the one ``_extract_task`` prefers).
+        """
+        for raw, ev in zip(self._events_raw, self.events):
+            if (
+                ev.event_type == "USER"
+                and ev.action
+                and ev.action.function_name == "send_message_to_agent"
+                and not ev.dependency_ids
+            ):
+                return _parse_media(ev.event_id, raw.get("media"))
+        return []
 
     # ------------------------------------------------------------------
     # Oracle data extraction (for the judge)
