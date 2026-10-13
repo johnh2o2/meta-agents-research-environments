@@ -198,3 +198,28 @@ class TestWorkerBridge:
             await asyncio.sleep(0.05)
 
         asyncio.run(_exercise())
+
+
+class TestMediaRejected:
+    def test_media_body_is_400_and_nothing_is_sent(self) -> None:
+        import gaia2_adapter_base
+
+        class _Writer:
+            data = b""
+
+            def write(self, data: bytes) -> None:
+                self.data += data
+
+        sent: list[str] = []
+
+        async def send_message(text: str) -> dict:
+            sent.append(text)
+            return {"run_id": "r"}
+
+        body = {"message": "x", "media": [{"asset_id": "a_1", "mime_type": "audio/wav", "sha256": "0" * 64}]}
+        writer = _Writer()
+        asyncio.run(
+            gaia2_adapter_base.handle_notify(writer, json.dumps(body).encode(), send_message, lambda: True)
+        )
+        assert writer.data.startswith(b"HTTP/1.1 400 ")
+        assert sent == []

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import types
@@ -413,3 +414,113 @@ class TestWriteAuiEventSimT:
         event = json.loads(events_path.read_text().strip())
         assert "sim_t" not in event
         assert event["fn"] == "send_message_to_agent"
+
+
+# ---------------------------------------------------------------------------
+# Media turns: base routing (handle_notify) and the OpenClaw marker message
+# ---------------------------------------------------------------------------
+
+_MEDIA_REF = {
+    "asset_id": "a_f7bfd6bc685b4f733ac5443dbec091da",
+    "mime_type": "audio/wav",
+    "sha256": "f7bfd6bc685b4f733ac5443dbec091dacfebb7fc4daf440e618a661a7e5e908b",
+}
+
+
+class _Writer:
+    def __init__(self) -> None:
+        self.data = b""
+
+    def write(self, data: bytes) -> None:
+        self.data += data
+
+    @property
+    def status(self) -> int:
+        return int(self.data.split(b" ", 2)[1])
+
+
+def _notify(body: dict, send_turn=None) -> tuple[_Writer, list]:
+    plain: list = []
+
+    async def send_message(text: str) -> dict:
+        plain.append(text)
+        return {"run_id": "r"}
+
+    writer = _Writer()
+    asyncio.run(
+        gaia2_adapter_base.handle_notify(
+            writer,
+            json.dumps(body).encode(),
+            send_message,
+            lambda: True,
+            send_turn=send_turn,
+        )
+    )
+    return writer, plain
+
+
+class TestHandleNotifyMedia:
+    def test_legacy_body_uses_send_message(self) -> None:
+        async def send_turn(text, media):  # pragma: no cover - must not run
+            raise AssertionError("send_turn called for a text-only body")
+
+        writer, plain = _notify({"message": " hi "}, send_turn=send_turn)
+        assert writer.status == 200
+        assert plain == ["hi"]
+
+    def test_media_without_send_turn_is_400(self) -> None:
+        writer, plain = _notify({"message": "x", "media": [_MEDIA_REF]})
+        assert writer.status == 400
+        assert plain == []
+
+    def test_media_is_passed_to_send_turn(self) -> None:
+        seen: list = []
+
+        async def send_turn(text, media):
+            seen.append((text, media))
+            return {"run_id": "r2"}
+
+        writer, plain = _notify({"message": "x", "media": [_MEDIA_REF]}, send_turn=send_turn)
+        assert writer.status == 200
+        assert plain == []
+        assert seen == [("x", [_MEDIA_REF])]
+
+    @pytest.mark.parametrize("media", [{"asset_id": "a"}, ["a_x"], [{"mime_type": "audio/wav"}]])
+    def test_malformed_media_is_400(self, media) -> None:
+        async def send_turn(text, media):  # pragma: no cover - must not run
+            raise AssertionError("send_turn called for malformed media")
+
+        writer, _ = _notify({"message": "x", "media": media}, send_turn=send_turn)
+        assert writer.status == 400
+
+
+class TestSendTurnMarkers:
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+        sent: list[dict] = []
+
+        async def fake_send_rpc(method: str, params: dict) -> dict:
+            sent.append({"method": method, **params})
+            return {"ok": True, "payload": {"runId": "run-1"}}
+
+        monkeypatch.setattr(adapter, "_connected", True)
+        monkeypatch.setattr(adapter, "_ws", object())
+        monkeypatch.setattr(adapter, "_send_rpc", fake_send_rpc)
+        return sent
+
+    def test_text_turn_chat_send_params_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self._capture(monkeypatch)
+        asyncio.run(adapter.send_message("Do the task"))
+        assert set(sent[0]) == {"method", "sessionKey", "message", "idempotencyKey"}
+        assert sent[0]["message"] == "Do the task"
+
+    def test_media_turn_appends_one_marker_per_asset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self._capture(monkeypatch)
+        other = {**_MEDIA_REF, "asset_id": "a_0000"}
+        result = asyncio.run(adapter.send_turn("[User request provided as audio]", [_MEDIA_REF, other]))
+        assert result == {"run_id": "run-1"}
+        assert sent[0]["message"] == (
+            "[User request provided as audio]\n"
+            "[[gaia2-media:a_f7bfd6bc685b4f733ac5443dbec091da]]\n"
+            "[[gaia2-media:a_0000]]"
+        )
+        assert set(sent[0]) == {"method", "sessionKey", "message", "idempotencyKey"}

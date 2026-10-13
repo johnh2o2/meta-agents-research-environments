@@ -449,6 +449,17 @@ async def send_message(text: str) -> dict:
     return {"run_id": run_id}
 
 
+async def send_turn(text: str, media: list[dict]) -> dict:
+    """Send a user turn that carries media refs.
+
+    OpenClaw 2026.4.1 drops non-image chat.send attachments, so each asset
+    rides in the message text as a ``[[gaia2-media:<asset_id>]]`` marker that
+    the launch.mjs fetch shim resolves to an ``input_audio`` part.
+    """
+    markers = "\n".join(f"[[gaia2-media:{ref['asset_id']}]]" for ref in media)
+    return await send_message(f"{text}\n{markers}")
+
+
 def is_connected() -> bool:
     return _connected
 
@@ -626,6 +637,7 @@ async def main():
         extra_routes=_extra_routes,
         on_notify_sent=_on_notify_sent,
         execute_action=_execute_action,
+        send_turn=send_turn,
     )
 
     await run_adapter(_state, handler, backend_connect, backend_name="OpenClaw")

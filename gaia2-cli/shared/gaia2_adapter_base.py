@@ -261,11 +261,16 @@ async def handle_notify(
     send_message: Callable[[str], Coroutine[Any, Any, dict]],
     is_connected: Callable[[], bool],
     on_sent: Callable[[str], None] | None = None,
+    send_turn: Callable[[str, list[dict]], Coroutine[Any, Any, dict]] | None = None,
 ) -> None:
     """Handle POST /notify — send a user message to the agent.
 
     *on_sent* is called after a successful send with the message text
     (e.g. to write an AUI event to events.jsonl).
+
+    A body with a ``media`` list (``{asset_id, mime_type, sha256}`` refs) is
+    passed to *send_turn*; a backend without one answers 400 rather than
+    dropping the media.
     """
     if not is_connected():
         http_response(
@@ -286,8 +291,25 @@ async def handle_notify(
         )
         return
 
+    media = data.get("media")
+    if media is not None:
+        if send_turn is None:
+            http_response(
+                writer, 400, {"ok": False, "error": "This backend does not accept media"}
+            )
+            return
+        if not isinstance(media, list) or not all(
+            isinstance(ref, dict) and isinstance(ref.get("asset_id"), str)
+            for ref in media
+        ):
+            http_response(writer, 400, {"ok": False, "error": 'Invalid "media" field'})
+            return
+
     try:
-        result = await send_message(message.strip())
+        if media is None:
+            result = await send_message(message.strip())
+        else:
+            result = await send_turn(message.strip(), media)
         if on_sent:
             on_sent(message.strip())
         http_response(writer, 200, {"ok": True, "runId": result.get("run_id", "")})
@@ -363,6 +385,7 @@ def create_client_handler(
     extra_routes: ExtraRouteHandler | None = None,
     on_notify_sent: Callable[[str], None] | None = None,
     execute_action: ExecuteActionHandler | None = None,
+    send_turn: Callable[[str, list[dict]], Coroutine[Any, Any, dict]] | None = None,
 ) -> Callable:
     """Create a ``handle_client`` coroutine with the standard route table.
 
@@ -377,6 +400,7 @@ def create_client_handler(
 
     *extra_routes* is called for any route not in the table above.
     *execute_action* handles ENV action dispatch from gaia2-eventd.
+    *send_turn* delivers a user message that carries media refs.
     """
 
     async def _handle_client(
@@ -427,7 +451,12 @@ def create_client_handler(
                     if handled:
                         return
                 await handle_notify(
-                    writer, body, send_message, is_connected, on_notify_sent
+                    writer,
+                    body,
+                    send_message,
+                    is_connected,
+                    on_notify_sent,
+                    send_turn=send_turn,
                 )
                 await writer.drain()
                 writer.close()
