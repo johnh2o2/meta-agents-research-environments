@@ -3,27 +3,34 @@
 # the root directory of this source tree.
 """Static checks of the image Dockerfiles (gaia2-cli base and every runtime).
 
-A way a rebuild of the same commit has broken in practice, caught here
+Ways a rebuild of the same commit has broken in practice, each caught here
 without building anything:
 
 - COPY keeps the modes of the build context. A checkout made under umask 0007
   has 0660 files, which the in-image gaia2 and agent users cannot read (the
   OpenClaw build then failed running /etc/profile.d/openclaw-setup.sh as
   agent). Every file copied from the context must therefore set its mode.
+- ``litellm>=1.0`` floats: a fresh build picked up litellm 1.105.0, whose
+  import builds an httpx SSL context. The base image pins every package.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
+import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 GAIA2_CLI_DIR = Path(__file__).resolve().parents[2]  # the image build context
 BASE_DOCKERFILE = GAIA2_CLI_DIR / "cli" / "Dockerfile"
 SCAFFOLD_DOCKERFILES = sorted((GAIA2_CLI_DIR / "containers").glob("*/Dockerfile"))
 DOCKERFILES = [BASE_DOCKERFILE, *SCAFFOLD_DOCKERFILES]
+CONSTRAINTS = GAIA2_CLI_DIR / "cli" / "image-constraints.txt"
+CONSTRAINTS_IN_IMAGE = "/tmp/image-constraints.txt"
 
 
 def _ids(paths: list[Path]) -> list[str]:
@@ -145,3 +152,81 @@ class TestRuntimeImages:
         assert "chmod 700 /opt/gaia2_filesystem" in runs
         for _, _, destination in _copies(dockerfile):
             assert not destination.startswith("/var/gaia2"), destination
+
+
+# ---------------------------------------------------------------------------
+# Python package pins of the base image
+# ---------------------------------------------------------------------------
+
+
+def _pins() -> dict[str, str]:
+    pins: dict[str, str] = {}
+    for line in CONSTRAINTS.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;=]+)", line)
+        assert match, f"not an exact pin: {line!r}"
+        name = canonicalize_name(match.group(1))
+        assert name not in pins, f"{name} pinned twice"
+        pins[name] = match.group(2)
+    return pins
+
+
+def _pip_installs() -> list[str]:
+    commands = []
+    for keyword, args in _instructions(BASE_DOCKERFILE):
+        if keyword == "RUN":
+            commands += [c.strip() for c in args.split("&&") if "pip install" in c]
+    return commands
+
+
+def test_constraints_pin_exact_versions() -> None:
+    pins = _pins()
+    assert pins["litellm"] == "1.105.0"
+    # The rest of the judge stack floats just the same without pins.
+    for name in ("httpx", "openai", "pydantic", "click"):
+        assert name in pins
+
+
+def test_every_base_image_pip_install_uses_the_constraints() -> None:
+    installs = _pip_installs()
+    assert len(installs) == 3  # gaia2-core, gaia2-cli[judge], huggingface_hub
+    for command in installs:
+        assert f"-c {CONSTRAINTS_IN_IMAGE}" in command, command
+
+
+def test_constraints_are_copied_before_the_first_install() -> None:
+    instructions = _instructions(BASE_DOCKERFILE)
+    copy_at = next(
+        i
+        for i, (kw, args) in enumerate(instructions)
+        if kw == "COPY"
+        and args.endswith(f"cli/image-constraints.txt {CONSTRAINTS_IN_IMAGE}")
+    )
+    install_at = next(
+        i
+        for i, (kw, args) in enumerate(instructions)
+        if kw == "RUN" and "pip install" in args
+    )
+    assert copy_at < install_at
+
+
+def test_pins_satisfy_the_declared_requirements() -> None:
+    pins = _pins()
+    cli = tomllib.loads((GAIA2_CLI_DIR / "cli" / "pyproject.toml").read_text())
+    core = tomllib.loads((GAIA2_CLI_DIR / "core" / "pyproject.toml").read_text())
+    requirements = [
+        *core["project"]["dependencies"],
+        *cli["project"]["dependencies"],
+        *cli["project"]["optional-dependencies"]["judge"],
+    ]
+    for spec in requirements:
+        requirement = Requirement(spec)
+        name = canonicalize_name(requirement.name)
+        if name in ("gaia2-core", "gaia2-cli"):
+            continue  # installed from the build context
+        assert name in pins, f"{name} is required but not pinned"
+        assert requirement.specifier.contains(pins[name], prereleases=True), (
+            f"{name}=={pins[name]} does not satisfy {spec!r}"
+        )

@@ -35,16 +35,20 @@ ENV PYTHONUNBUFFERED=1
 # Set working directory
 WORKDIR /app
 
+# Exact versions for every pip install below, so rebuilding the same commit
+# gives the same judge stack (see the file's header to refresh them).
+COPY --chmod=0644 cli/image-constraints.txt /tmp/image-constraints.txt
+
 # Copy gaia2-core (shared dependency) and install it first
 COPY --chmod=0755 core/ /tmp/core/
-RUN pip install --no-cache-dir /tmp/core/ && rm -rf /tmp/core/
+RUN pip install --no-cache-dir -c /tmp/image-constraints.txt /tmp/core/ && rm -rf /tmp/core/
 
 # Copy project files
 COPY --chmod=0644 cli/pyproject.toml .
 COPY --chmod=0755 cli/gaia2_cli/ ./gaia2_cli/
 
 # Install the package
-RUN pip install --no-cache-dir ".[judge]"
+RUN pip install --no-cache-dir -c /tmp/image-constraints.txt ".[judge]"
 
 # Remove build source (only needed for pip install)
 RUN rm -rf /app/gaia2_cli/ /app/pyproject.toml
@@ -53,10 +57,10 @@ RUN rm -rf /app/gaia2_cli/ /app/pyproject.toml
 # Scenarios reference these via real_path fields; gaia2-init copies
 # only the files each scenario needs to /var/gaia2/state/filesystem/.
 ARG HF_TOKEN=""
-RUN pip install --no-cache-dir "huggingface_hub[cli]" && \
+RUN pip install --no-cache-dir -c /tmp/image-constraints.txt "huggingface_hub[cli]" && \
     HF_TOKEN="${HF_TOKEN}" python -c "from huggingface_hub import snapshot_download; snapshot_download('meta-agents-research-environments/gaia2_filesystem', repo_type='dataset', local_dir='/opt/gaia2_filesystem')" && \
     pip uninstall -y huggingface_hub filelock fsspec tqdm && \
-    rm -rf /root/.cache/huggingface
+    rm -rf /root/.cache/huggingface /tmp/image-constraints.txt
 
 ENV GAIA2_FS_BACKING_DIR=/opt/gaia2_filesystem
 
