@@ -130,6 +130,14 @@ class TestRuntimeImages:
         assert len(modes) == 1
         assert modes[0] & 0o111 == 0o111
 
+    def test_tls_env_helper_is_shipped(self, dockerfile: Path) -> None:
+        entrypoint = dockerfile.parent / "gaia2-init-entrypoint.sh"
+        assert ". /opt/gaia2-tls-env.sh" in entrypoint.read_text()
+        assert (["shared/gaia2-tls-env.sh"], "/opt/gaia2-tls-env.sh") in [
+            (sources, destination)
+            for _, sources, destination in _context_copies(dockerfile)
+        ]
+
     def test_privilege_boundaries_are_unchanged(self, dockerfile: Path) -> None:
         runs = " ; ".join(args for kw, args in _instructions(dockerfile) if kw == "RUN")
         assert "chmod u+s /usr/local/bin/gaia2-exec" in runs

@@ -66,6 +66,7 @@ RUN mkdir -p /home/agent/bin && \
 
 # ── Oracle adapter + entrypoints ─────────────────────────────────────────
 COPY --chmod=0644 shared/gaia2_adapter_base.py /opt/gaia2_adapter_base.py
+COPY --chmod=0644 shared/gaia2-tls-env.sh /opt/gaia2-tls-env.sh
 COPY --chmod=0644 containers/oracle/gaia2_oracle_adapter.py /opt/gaia2_oracle_adapter.py
 COPY --chmod=0755 containers/oracle/gaia2-init-entrypoint.sh /opt/gaia2-init-entrypoint.sh
 COPY --chmod=0755 containers/oracle/entrypoint.sh /opt/entrypoint.sh

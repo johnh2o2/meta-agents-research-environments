@@ -134,6 +134,7 @@ ENV PATH="/home/agent/bin"
 
 # ── Entrypoint ─────────────────────────────────────────────────────────
 USER root
+COPY --chmod=0644 shared/gaia2-tls-env.sh /opt/gaia2-tls-env.sh
 COPY --chmod=0755 containers/hermes/gaia2-init-entrypoint.sh /opt/gaia2-init-entrypoint.sh
 
 ENTRYPOINT []
