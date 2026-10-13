@@ -162,6 +162,7 @@ class Gaia2EventDaemon:
         # Populated by setup()
         self._processor: Any = None  # EventProcessor
         self._task: str | None = None
+        self._task_media: list[dict[str, str]] = []
         self._final_judgment: Any = None
         self._app_name_to_class: dict[str, str] = {}
         self._app_to_agent_cli: dict[str, str] = {}  # scenario app → agent CLI name
@@ -193,6 +194,7 @@ class Gaia2EventDaemon:
         logger.info("Loading scenario from %s", self.scenario_path)
         loader = ScenarioLoader(str(self.scenario_path))
         self._task = loader.task
+        self._task_media = loader.task_media
         self._app_name_to_class = loader.app_name_to_class
 
         # Build scenario app name → agent-visible CLI command mapping
@@ -467,10 +469,15 @@ class Gaia2EventDaemon:
 
         # Send initial user message if available
         if self._task:
-            self._write_notification(
-                {"type": "user_message", "content": self._task, "turn": 0}
+            notification = {"type": "user_message", "content": self._task, "turn": 0}
+            if self._task_media:
+                notification["media"] = self._task_media
+            self._write_notification(notification)
+            logger.info(
+                "Sent initial user message (%d chars, %d media)",
+                len(self._task),
+                len(self._task_media),
             )
-            logger.info("Sent initial user message (%d chars)", len(self._task))
 
         poll_count = 0
         last_activity = time.time()
@@ -1093,13 +1100,22 @@ class Gaia2EventDaemon:
         )
         self._send_to_endpoint("/send_notifications", content)
 
-    def _send_to_endpoint(self, endpoint: str, content: str, retries: int = 5) -> bool:
-        """POST a message to an adapter endpoint with retries."""
+    def _send_to_endpoint(
+        self,
+        endpoint: str,
+        content: str,
+        retries: int = 5,
+        media: list[dict[str, str]] | None = None,
+    ) -> bool:
+        """POST a message (plus any media refs) to an adapter endpoint with retries."""
         if not self.notify_url:
             logger.warning("No notify_url configured, cannot send to %s", endpoint)
             return False
         url = f"{self.notify_url.rstrip('/')}{endpoint}"
-        payload = json.dumps({"message": content}).encode()
+        body: dict[str, Any] = {"message": content}
+        if media:
+            body["media"] = media
+        payload = json.dumps(body).encode()
         for attempt in range(retries):
             try:
                 with self._noproxy_urlopen(url, data=payload, timeout=30) as resp:
@@ -1121,9 +1137,14 @@ class Gaia2EventDaemon:
         logger.error("Failed to send to %s after %d attempts", endpoint, retries)
         return False
 
-    def _send_via_notify_url(self, content: str, retries: int = 5) -> bool:
+    def _send_via_notify_url(
+        self,
+        content: str,
+        retries: int = 5,
+        media: list[dict[str, str]] | None = None,
+    ) -> bool:
         """Send a user message via POST /send_user_message (or /notify alias)."""
-        return self._send_to_endpoint("/send_user_message", content, retries)
+        return self._send_to_endpoint("/send_user_message", content, retries, media)
 
     def _write_notification(self, notification: dict[str, Any]) -> None:
         """Write a notification to the agent (file mode fallback).
@@ -1146,7 +1167,7 @@ class Gaia2EventDaemon:
 
         if self.notify_url:
             if content:
-                self._send_via_notify_url(content)
+                self._send_via_notify_url(content, media=notification.get("media"))
         else:
             with open(self.notifications_path, "a") as f:
                 f.write(json.dumps(notification) + "\n")

@@ -664,3 +664,72 @@ class TestFaketimeAdvancement:
 
         # Should not raise
         d._advance_time()
+
+
+# ---------------------------------------------------------------------------
+# Adapter payload bytes (text-only vs. media turns)
+# ---------------------------------------------------------------------------
+
+_MEDIA_REF = {
+    "asset_id": "a_f7bfd6bc685b4f733ac5443dbec091da",
+    "mime_type": "audio/wav",
+    "sha256": "f7bfd6bc685b4f733ac5443dbec091dacfebb7fc4daf440e618a661a7e5e908b",
+}
+
+
+class _FakeResp:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return b'{"ok": true}'
+
+
+class TestAdapterPayload:
+    """The adapter body is exactly {"message": text} unless the turn has media."""
+
+    def _capture(self, daemon, monkeypatch):
+        sent: list[tuple[str, bytes]] = []
+
+        def fake_urlopen(url, data=None, timeout=10):
+            sent.append((url, data))
+            return _FakeResp()
+
+        daemon.notify_url = "http://127.0.0.1:8090"
+        monkeypatch.setattr(daemon, "_noproxy_urlopen", fake_urlopen)
+        return sent
+
+    def test_text_only_payload_bytes_unchanged(self, daemon, monkeypatch):
+        sent = self._capture(daemon, monkeypatch)
+        daemon._write_notification({"type": "user_message", "content": "hi", "turn": 0})
+        daemon._send_to_endpoint("/send_notifications", "[Notification] x")
+        assert sent == [
+            ("http://127.0.0.1:8090/send_user_message", json.dumps({"message": "hi"}).encode()),
+            (
+                "http://127.0.0.1:8090/send_notifications",
+                json.dumps({"message": "[Notification] x"}).encode(),
+            ),
+        ]
+
+    def test_initial_turn_media_posted_with_message(self, daemon, monkeypatch):
+        sent = self._capture(daemon, monkeypatch)
+        daemon._task = "[User request provided as audio]"
+        daemon._task_media = [_MEDIA_REF]
+        monkeypatch.setattr(daemon, "_wait_for_notify_url", lambda: True)
+
+        def stop():  # end _run_file right after the initial send
+            raise StopIteration
+
+        monkeypatch.setattr(daemon, "_read_new_events", stop)
+        daemon._running = True
+        with pytest.raises(StopIteration):
+            daemon._run_file()
+        url, data = sent[0]
+        assert url.endswith("/send_user_message")
+        assert json.loads(data) == {
+            "message": "[User request provided as audio]",
+            "media": [_MEDIA_REF],
+        }
