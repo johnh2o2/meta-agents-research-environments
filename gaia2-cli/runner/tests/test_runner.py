@@ -293,6 +293,7 @@ def _write_judge_context(scenario_path: Path, turns: dict, version: int = 1) -> 
             {"version": version, "turns": {k: {"text": v} for k, v in turns.items()}}
         )
     )
+    path.chmod(0o600)
     return path
 
 
@@ -333,6 +334,20 @@ class TestJudgeContext:
         assert result["success"] is None
         assert expected in result["error"]
         assert _JUDGE_TEXT not in result["error"]
+
+    def test_a_world_readable_judge_context_fails_before_launch(
+        self, tmp_path: Path
+    ) -> None:
+        scenario_path = _make_scenario(tmp_path, events=[_make_user_event()])
+        _write_judge_context(scenario_path, {"Event-USER-abc": _JUDGE_TEXT}).chmod(
+            0o644
+        )
+
+        result, launcher = self._run(scenario_path, {"status": "complete"})
+
+        launcher.launch.assert_not_called()
+        assert result["success"] is None
+        assert "chmod 600" in result["error"]
 
     def test_verdict_stands_when_the_daemon_applied_the_judge_context(
         self, tmp_path: Path

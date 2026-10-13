@@ -308,7 +308,8 @@ my_dataset/search/scenario_1.judge_context.json
   The init entrypoint installs the copy gaia2-eventd reads,
   `/var/gaia2/judge_context.json` (`$GAIA2_JUDGE_CONTEXT`), owned by `gaia2`
   with mode `0600`, and refuses to start the agent if the agent user could read
-  the staged mount. Keep the host file at mode `0600`.
+  the staged mount. Keep the host file at mode `0600`; the runner refuses a
+  world-readable one before launching.
 - gaia2-eventd refuses a copy that is not `0600` and owned by `gaia2`, and
   stops at once with `status=error`; the run then reports
   `error: "Daemon error: Invalid judge context: ..."`. Logs, `daemon_status.json`

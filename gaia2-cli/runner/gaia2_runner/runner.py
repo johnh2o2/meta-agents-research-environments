@@ -27,6 +27,7 @@ from typing import Any
 
 import requests
 from gaia2_core.judge_context import (
+    JudgeContextError,
     check_user_turn_ids,
     judge_context_sidecar_path,
     load_judge_context,
@@ -575,14 +576,21 @@ class ContainerRunner:
         0 when there is none.
 
         Raises:
-            JudgeContextError: It is malformed or names events that are not
-                user turns of this scenario.
+            JudgeContextError: It is world-readable, malformed, or names events
+                that are not user turns of this scenario.
         """
-        texts = load_judge_context(
-            judge_context_sidecar_path(scenario_path), missing_ok=True
-        )
+        sidecar = judge_context_sidecar_path(scenario_path)
+        texts = load_judge_context(sidecar, missing_ok=True)
         if texts is None:
             return 0
+        mode = sidecar.stat().st_mode & 0o777
+        if mode & 0o004:
+            # Inside the container the agent would be "other" too, and the
+            # init entrypoint refuses to start; say so before launching.
+            raise JudgeContextError(
+                f"judge context {sidecar} is readable by every user (mode "
+                f"{mode:04o}); chmod 600 it so the agent cannot read it"
+            )
         user_turn_ids = {
             str(ev.get("event_id"))
             for ev in scenario_data.get("events") or []
