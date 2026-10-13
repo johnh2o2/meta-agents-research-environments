@@ -5,7 +5,16 @@ import { appendFileSync } from "node:fs";
 import { setDefaultResultOrder } from "node:dns";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "/opt/chatbot/node_modules/undici/index.js";
 
-import { classifyLlmRequest } from "./launch_request_utils.mjs";
+import {
+  classifyLlmRequest,
+  injectMediaParts,
+  loadMediaManifest,
+  redactMediaForTrace,
+} from "./launch_request_utils.mjs";
+
+// Audio prompts: on only when $GAIA2_MEDIA_ROOT/manifest.json exists.
+const MEDIA = loadMediaManifest(process.env.GAIA2_MEDIA_ROOT || "");
+if (MEDIA) console.error(`[launch.mjs] GAIA media markers enabled (root=${MEDIA.root})`);
 
 // Force IPv4-first DNS resolution. Some hosts advertise unusable IPv6 routes
 // ahead of IPv4, which can turn outbound API calls into avoidable timeouts.
@@ -30,7 +39,7 @@ function traceLog(url, init, status, rawText, latencyMs) {
   if (!TRACE_FILE) return;
   traceSeq++;
   let requestBody = null;
-  try { requestBody = JSON.parse(init?.body || "{}"); } catch(e) {}
+  try { requestBody = redactMediaForTrace(JSON.parse(init?.body || "{}"), MEDIA); } catch(e) {}
 
   const entry = {
     seq: traceSeq,
@@ -140,6 +149,21 @@ globalThis.fetch = async function(url, init) {
       }
       if (changed) {
         init = { ...init, body: JSON.stringify(reqBody) };
+      }
+      if (MEDIA) {
+        try {
+          if (injectMediaParts(reqBody, MEDIA).length > 0) {
+            init = { ...init, body: JSON.stringify(reqBody) };
+          }
+        } catch (e) {
+          // Refuse without calling upstream: never send a turn without its audio.
+          const errBody = JSON.stringify({
+            error: { message: `gaia2 media refused: ${e?.code || "bridge_error"}`, type: "invalid_request_error" },
+          });
+          console.error(`[launch.mjs] GAIA media refused: ${e?.message || e}`);
+          traceLog(url, init, 400, errBody, 0);
+          return new Response(errBody, { status: 400, headers: { "content-type": "application/json" } });
+        }
       }
     } catch(e) { /* not JSON, leave as-is */ }
   }
