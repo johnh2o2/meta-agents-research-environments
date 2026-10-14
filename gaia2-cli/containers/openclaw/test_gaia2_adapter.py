@@ -359,6 +359,23 @@ class TestBackendResponse:
         reset_adapter_state["buffer"].assert_not_called()
         reset_adapter_state["aui"].assert_not_called()
 
+    @pytest.mark.parametrize("text", ["HEARTBEAT_OK", "NO_REPLY"])
+    def test_internal_final_ack_from_own_run_closes_turn_empty(
+        self,
+        text: str,
+        reset_adapter_state: dict[str, mock.MagicMock],
+    ) -> None:
+        """A chat.send run that answers HEARTBEAT_OK must still end its turn."""
+        adapter._own_run_ids.add("task-run")
+        response = {"state": "final", "run_id": "task-run", "message": text}
+
+        adapter.on_backend_response(response)
+
+        reset_adapter_state["buffer"].assert_called_once_with(
+            {**response, "message": ""}
+        )
+        reset_adapter_state["aui"].assert_called_once_with("send_message_to_user", "")
+
 
 class TestNotifySent:
     def test_notify_sent_writes_agent_event(

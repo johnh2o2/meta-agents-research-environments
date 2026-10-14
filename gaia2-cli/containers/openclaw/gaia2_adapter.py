@@ -534,8 +534,19 @@ def on_backend_response(response: dict) -> None:
     # agent completion when maxToolRoundtrips is exhausted without text output.
     text_preview = _response_text(response).strip()
     if state == "final" and text_preview in ("HEARTBEAT_OK", "NO_REPLY"):
-        print(f"[gaia2-adapter] Dropped internal ack '{text_preview}' (runId={run_id})")
-        return
+        if run_id not in _own_run_ids:
+            print(f"[gaia2-adapter] Dropped internal ack '{text_preview}' (runId={run_id})")
+            return
+        # The inlined HEARTBEAT.md tells the model to answer HEARTBEAT_OK when
+        # nothing needs doing. OpenClaw strips NO_REPLY to an empty reply but
+        # not HEARTBEAT_OK, so a run chat.send started would never close its
+        # turn. Close it empty, as a stripped NO_REPLY does.
+        print(
+            f"[gaia2-adapter] Ack '{text_preview}' ends a run the adapter started; "
+            f"closing the turn with an empty reply (runId={run_id})"
+        )
+        response = {**response, "message": ""}
+        text_preview = ""
     # The pre-compaction memory flush is an agent run of OpenClaw's own that
     # ends silently. Letting it close the turn would end the scenario before
     # the agent has even seen the task, so only runs started by chat.send may
