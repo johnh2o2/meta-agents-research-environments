@@ -655,6 +655,40 @@ class TestDaemonStatusFallback:
         assert result["daemon_status"] == {}
 
 
+class TestExtractDaemonLogs:
+    def test_adapter_log_is_extracted_with_the_other_container_logs(
+        self, tmp_path: Path
+    ) -> None:
+        launcher = _mock_launcher()
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("container-123", tmp_path)
+
+        copied = {
+            call.args[1]: Path(call.args[2]).name
+            for call in launcher.copy_from.call_args_list
+        }
+        assert copied["/tmp/gaia2-adapter.log"] == "adapter.log"
+        assert copied["/tmp/gaia2-eventd.log"] == "eventd.log"
+
+    def test_one_missing_log_does_not_stop_the_others(self, tmp_path: Path) -> None:
+        launcher = _mock_launcher()
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            if src == "/tmp/gaia2-adapter.log":
+                raise RuntimeError("no such file")
+            Path(dst).write_text(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("container-123", tmp_path)
+
+        assert not (tmp_path / "adapter.log").exists()
+        assert (tmp_path / "eventd.log").read_text() == "/tmp/gaia2-eventd.log"
+        assert (tmp_path / "entrypoint.log").exists()
+
+
 class TestBuildContainerEnv:
     def test_uses_required_judge_config_without_judge_type(self) -> None:
         runner = _make_runner()

@@ -1062,6 +1062,7 @@ class ContainerRunner:
 
         Copies:
         - ``/tmp/gaia2-eventd.log`` → ``eventd.log``
+        - ``/tmp/gaia2-adapter.log`` → ``adapter.log``
         - ``/tmp/entrypoint.log`` → ``entrypoint.log``
         - ``/var/gaia2/state/judgments.jsonl`` → ``daemon_judgments.jsonl``
         - ``/var/gaia2/state/user_details.json`` → ``user_details.json``
@@ -1071,6 +1072,7 @@ class ContainerRunner:
         """
         for src, dst in [
             ("/tmp/gaia2-eventd.log", "eventd.log"),
+            ("/tmp/gaia2-adapter.log", "adapter.log"),
             ("/tmp/entrypoint.log", "entrypoint.log"),
             ("/var/gaia2/state/judgments.jsonl", "daemon_judgments.jsonl"),
             ("/var/gaia2/state/user_details.json", "user_details.json"),
