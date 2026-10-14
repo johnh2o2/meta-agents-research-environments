@@ -6,10 +6,14 @@ import { setDefaultResultOrder } from "node:dns";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "/opt/chatbot/node_modules/undici/index.js";
 
 import {
+  abortReason,
+  attemptSignal,
   classifyLlmRequest,
   injectMediaParts,
   loadMediaManifest,
   redactMediaForTrace,
+  retryAllowed,
+  waitUnlessAborted,
 } from "./launch_request_utils.mjs";
 
 // Audio prompts: on only when $GAIA2_MEDIA_ROOT/manifest.json exists.
@@ -179,52 +183,62 @@ globalThis.fetch = async function(url, init) {
   const MAX_RETRIES = isLLMCall ? 5 : 0;
   const FETCH_TIMEOUT_MS = isLLMCall ? 180000 : 0; // 180s timeout
   let resp, text, latencyMs;
+  // OpenClaw abandons a request by aborting its signal; every attempt follows
+  // it, and an aborted request is never retried.
+  const callerSignal = init?.signal;
 
   for (let attempt = 0; ; attempt++) {
     const startTime = Date.now();
+    const attemptSig = FETCH_TIMEOUT_MS > 0 ? attemptSignal(callerSignal, FETCH_TIMEOUT_MS) : null;
 
     try {
-      if (FETCH_TIMEOUT_MS > 0) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      if (attemptSig) {
         try {
-          resp = await _origFetch.call(this, url, { ...init, signal: controller.signal });
+          resp = await _origFetch.call(this, url, { ...init, signal: attemptSig.signal });
         } finally {
-          clearTimeout(timer);
+          attemptSig.clearTimeout();
         }
       } else {
         resp = await _origFetch.call(this, url, init);
       }
     } catch (err) {
+      attemptSig?.release();
       latencyMs = Date.now() - startTime;
       if (!isLLMCall) throw err;
       const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError" || err?.code === "UND_ERR_CONNECT_TIMEOUT" || err?.message?.includes("timed out");
-      const errInfo = { error: err?.message || String(err), type: isTimeout ? "timeout" : "fetch_error" };
+      const errType = callerSignal?.aborted ? "caller_aborted" : isTimeout ? "timeout" : "fetch_error";
+      const errInfo = { error: err?.message || String(err), type: errType };
       traceLog(url, init, 0, JSON.stringify(errInfo), latencyMs);
 
-      if (attempt < MAX_RETRIES) {
+      if (retryAllowed(attempt, MAX_RETRIES, callerSignal)) {
         const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 60000);
         console.error(`[launch.mjs] LLM fetch error (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${errInfo.type} for ${urlStr} (${latencyMs}ms): ${errInfo.error} — retrying in ${(delay / 1000).toFixed(1)}s`);
-        await new Promise(r => setTimeout(r, delay));
+        await waitUnlessAborted(delay, callerSignal);
+        if (callerSignal?.aborted) throw abortReason(callerSignal);
         continue;
       }
-      console.error(`[launch.mjs] LLM fetch error (final attempt): ${errInfo.type} for ${urlStr} (${latencyMs}ms): ${errInfo.error}`);
+      console.error(`[launch.mjs] LLM fetch error (${callerSignal?.aborted ? "caller aborted, not retrying" : "final attempt"}): ${errInfo.type} for ${urlStr} (${latencyMs}ms): ${errInfo.error}`);
       throw err;
     }
 
     if (!isLLMCall) return resp;
 
-    text = await resp.text();
+    try {
+      text = await resp.text();
+    } finally {
+      attemptSig?.release();
+    }
     latencyMs = Date.now() - startTime;
 
     // Retry on 429 (rate limit) and 5xx (server errors)
-    if ((resp.status === 429 || resp.status >= 500) && attempt < MAX_RETRIES) {
+    if ((resp.status === 429 || resp.status >= 500) && retryAllowed(attempt, MAX_RETRIES, callerSignal)) {
       const retryAfter = resp.headers.get("retry-after");
       const delay = retryAfter ? Math.min(parseFloat(retryAfter) * 1000, 60000) : Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 60000);
       const preview = text.length > 200 ? text.slice(0, 200) + "..." : text;
       console.error(`[launch.mjs] LLM API HTTP ${resp.status} (attempt ${attempt + 1}/${MAX_RETRIES + 1}) from ${urlStr} (${latencyMs}ms): ${preview} — retrying in ${(delay / 1000).toFixed(1)}s`);
       traceLog(url, init, resp.status, text, latencyMs);
-      await new Promise(r => setTimeout(r, delay));
+      await waitUnlessAborted(delay, callerSignal);
+      if (callerSignal?.aborted) throw abortReason(callerSignal);
       continue;
     }
 

@@ -206,7 +206,8 @@ test: ## Run Gaia2 unit tests
 		containers/hermes/test_gaia2_adapter.py \
 		containers/hermes/test_hermes_worker.py \
 		-q && \
-	node containers/openclaw/test_launch_request_utils.mjs
+	node containers/openclaw/test_launch_request_utils.mjs && \
+	node containers/openclaw/test_launch_fetch_abort.mjs
 
 # ── Utilities ──────────────────────────────────────────────────────────
 

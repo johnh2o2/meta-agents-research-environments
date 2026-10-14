@@ -24,6 +24,52 @@ export function forwardedReasoning(msg, env) {
   return typeof msg?.reasoning === "string" ? msg.reasoning : "";
 }
 
+// Signal for one LLM fetch attempt: aborts when the caller's own signal does
+// (with the caller's reason, as a plain fetch would) or when the per-attempt
+// timeout fires. clearTimeout() stops only the timer; release() also unlinks
+// the caller's signal once the attempt is over.
+export function attemptSignal(callerSignal, timeoutMs) {
+  const controller = new AbortController();
+  const linked = typeof callerSignal?.addEventListener === "function";
+  const follow = () => controller.abort(callerSignal.reason);
+  if (callerSignal?.aborted) follow();
+  else if (linked) callerSignal.addEventListener("abort", follow, { once: true });
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  return {
+    signal: controller.signal,
+    clearTimeout: () => clearTimeout(timer),
+    release: () => {
+      clearTimeout(timer);
+      if (linked) callerSignal.removeEventListener("abort", follow);
+    },
+  };
+}
+
+// Retry backoff that ends early once the caller has aborted.
+export function waitUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const linked = typeof signal?.addEventListener === "function";
+    const done = () => {
+      clearTimeout(timer);
+      if (linked) signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    if (linked) signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+// The retry policy, minus retries for a request the caller has given up on.
+export function retryAllowed(attempt, maxRetries, callerSignal) {
+  return attempt < maxRetries && !callerSignal?.aborted;
+}
+
+// What a fetch rejects with when its signal was aborted.
+export function abortReason(signal) {
+  return signal?.reason ?? new DOMException("This operation was aborted", "AbortError");
+}
+
 export function classifyLlmRequest(url, init) {
   const urlStr = typeof url === "string" ? url : url?.toString?.() || "";
   const method = init?.method?.toUpperCase() || "";
