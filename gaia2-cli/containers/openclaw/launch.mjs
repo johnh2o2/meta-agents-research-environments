@@ -72,6 +72,67 @@ function sseChunk(meta, choices) {
 }
 
 // ---------------------------------------------------------------------------
+// Thinking-model tool-call signatures
+// ---------------------------------------------------------------------------
+// Thinking models (e.g. Gemini via the genai gateway) attach
+// extra_content.google.thought_signature to each tool_call on the turn that
+// produced it, and REQUIRE that same signature be echoed back on the follow-up
+// (tool-result) request. OpenClaw's core neither re-serializes extra_content nor
+// preserves the tool_call id verbatim (it de-underscores call_596832 ->
+// call596832), so the signature is lost and the genai gateway rejects the next
+// request with HTTP 400. We bridge that here: capture each tool_call's
+// extra_content keyed by a normalized id on the way back, and re-attach it to
+// the matching tool_call on the way out. Non-thinking models and other backends
+// never populate extra_content, so the map stays empty and behavior is
+// unchanged.
+const toolCallExtraContent = new Map();
+
+function normalizeId(id) {
+  // OpenClaw mutates call_596832 -> call596832, so match on alphanumerics only.
+  return String(id == null ? "" : id).replace(/[^a-zA-Z0-9]/g, "");
+}
+
+function captureToolCallSignatures(json) {
+  for (const choice of (json?.choices || [])) {
+    const tcs = choice?.message?.tool_calls;
+    if (!Array.isArray(tcs)) continue;
+    for (const tc of tcs) {
+      if (tc && tc.id != null && tc.extra_content != null) {
+        toolCallExtraContent.set(normalizeId(tc.id), tc.extra_content);
+      }
+    }
+  }
+}
+
+function reinjectToolCallSignatures(messages) {
+  let changed = false;
+  if (!Array.isArray(messages)) return changed;
+  for (const m of messages) {
+    const tcs = m?.tool_calls;
+    if (!Array.isArray(tcs)) continue;
+    for (const tc of tcs) {
+      if (!tc || tc.id == null) continue;
+      const sig = toolCallExtraContent.get(normalizeId(tc.id));
+      if (sig != null) {
+        tc.extra_content = sig;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function isMissingSignatureError(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  if (t.includes("thought_signature") || t.includes("thought signature")) return true;
+  return (
+    t.includes("signature") &&
+    (t.includes("missing") || t.includes("invalid") || t.includes("required") || t.includes("not found"))
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ChatCompletion → SSE converter
 // ---------------------------------------------------------------------------
 // OpenClaw's OpenAI SDK sends stream:true and expects SSE responses.
@@ -110,7 +171,12 @@ function completionToSSE(json) {
     if (msg.tool_calls) {
       for (let i = 0; i < msg.tool_calls.length; i++) {
         const tc = msg.tool_calls[i];
-        sse += sseChunk(meta, [{ index: idx, finish_reason: null, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name } }] } }]);
+        const firstToolCall = { index: i, id: tc.id, type: "function", function: { name: tc.function.name } };
+        // Thinking models carry a thought signature the follow-up turn must echo
+        // back; forward it so OpenClaw can re-serialize it (non-thinking models
+        // have no extra_content, leaving the delta shape unchanged).
+        if (tc.extra_content != null) firstToolCall.extra_content = tc.extra_content;
+        sse += sseChunk(meta, [{ index: idx, finish_reason: null, delta: { tool_calls: [firstToolCall] } }]);
         sse += sseChunk(meta, [{ index: idx, finish_reason: null, delta: { tool_calls: [{ index: i, function: { arguments: tc.function.arguments } }] } }]);
       }
     }
@@ -158,6 +224,11 @@ globalThis.fetch = async function(url, init) {
         reqBody.reasoning = { effort };
         changed = true;
       }
+      // Re-attach captured thinking-model tool-call signatures to the echoed
+      // assistant tool_calls so the follow-up (tool-result) turn is accepted.
+      if (reinjectToolCallSignatures(reqBody.messages)) {
+        changed = true;
+      }
       if (changed) {
         init = { ...init, body: JSON.stringify(reqBody) };
       }
@@ -183,6 +254,9 @@ globalThis.fetch = async function(url, init) {
   const MAX_RETRIES = isLLMCall ? 5 : 0;
   const FETCH_TIMEOUT_MS = isLLMCall ? 180000 : 0; // 180s timeout
   let resp, text, latencyMs;
+  // One-shot repair for a thinking-model follow-up turn rejected with HTTP 400
+  // because its tool_call thought signature is missing/invalid.
+  let signatureRepairAttempted = false;
   // OpenClaw abandons a request by aborting its signal; every attempt follows
   // it, and an aborted request is never retried.
   const callerSignal = init?.signal;
@@ -242,6 +316,27 @@ globalThis.fetch = async function(url, init) {
       continue;
     }
 
+    // Thinking-model follow-up turns are rejected with HTTP 400 when the
+    // tool_call thought signature is missing/invalid. Repair once by
+    // re-attaching captured signatures to the outbound body and resend, rather
+    // than letting the episode die. Other 400s are left as-is.
+    if (resp.status === 400 && !signatureRepairAttempted && isMissingSignatureError(text)) {
+      signatureRepairAttempted = true;
+      let repairedInit = null;
+      try {
+        const rb = JSON.parse(init?.body || "null");
+        if (rb && reinjectToolCallSignatures(rb.messages)) {
+          repairedInit = { ...init, body: JSON.stringify(rb) };
+        }
+      } catch (e) { /* body not JSON — nothing to repair */ }
+      if (repairedInit) {
+        console.error(`[launch.mjs] LLM API HTTP 400 missing thought signature from ${urlStr} (${latencyMs}ms) — re-injecting tool_call signatures and retrying`);
+        traceLog(url, init, resp.status, text, latencyMs);
+        init = repairedInit;
+        continue;
+      }
+    }
+
     break; // Success or non-retryable error
   }
 
@@ -279,6 +374,9 @@ globalThis.fetch = async function(url, init) {
 
   try {
     const body = JSON.parse(text);
+    // Capture any thinking-model tool-call signatures before converting, keyed
+    // by normalized id, so the follow-up turn's request can echo them back.
+    captureToolCallSignatures(body);
     const sse = completionToSSE(body);
     const headers = new Headers(resp.headers);
     headers.set("content-type", "text/event-stream");
