@@ -43,6 +43,10 @@ DEFAULT_HEALTH_TIMEOUT = 120
 # Container path where the LLM trace is written (read back by _extract_trace_file)
 _CONTAINER_TRACE_PATH = "/tmp/trace.jsonl"
 _CONTAINER_DAEMON_STATUS_PATH = "/var/gaia2/state/daemon_status.json"
+# gaia2-eventd writes judgments (oracle events per judged turn) into a
+# gaia2-only directory, out of the agent's reach; older images used the state dir.
+_CONTAINER_JUDGMENTS_PATH = "/var/gaia2/logs/judgments.jsonl"
+_LEGACY_CONTAINER_JUDGMENTS_PATH = "/var/gaia2/state/judgments.jsonl"
 _TERMINAL_DAEMON_STATUSES = frozenset({"complete", "stopped", "error"})
 _POLL_FAILURE_SHORTCIRCUIT_THRESHOLD = 5
 
@@ -1063,7 +1067,9 @@ class ContainerRunner:
         Copies:
         - ``/tmp/gaia2-eventd.log`` → ``eventd.log``
         - ``/tmp/entrypoint.log`` → ``entrypoint.log``
-        - ``/var/gaia2/state/judgments.jsonl`` → ``daemon_judgments.jsonl``
+        - ``/var/gaia2/logs/judgments.jsonl`` → ``daemon_judgments.jsonl``
+          (``/var/gaia2/state/judgments.jsonl`` on images that predate the
+          gaia2-only log dir)
         - ``/var/gaia2/state/user_details.json`` → ``user_details.json``
         - ``/var/gaia2/state/daemon_status.json`` → ``daemon_status.json``
         - ``/var/gaia2/state/notifications.jsonl`` → ``notifications.jsonl``
@@ -1072,7 +1078,7 @@ class ContainerRunner:
         for src, dst in [
             ("/tmp/gaia2-eventd.log", "eventd.log"),
             ("/tmp/entrypoint.log", "entrypoint.log"),
-            ("/var/gaia2/state/judgments.jsonl", "daemon_judgments.jsonl"),
+            (_CONTAINER_JUDGMENTS_PATH, "daemon_judgments.jsonl"),
             ("/var/gaia2/state/user_details.json", "user_details.json"),
             ("/var/gaia2/state/daemon_status.json", "daemon_status.json"),
             ("/var/gaia2/state/notifications.jsonl", "notifications.jsonl"),
@@ -1082,3 +1088,15 @@ class ContainerRunner:
                 self.launcher.copy_from(container_id, src, str(artifact_dir / dst))
             except Exception:
                 logger.debug("Could not extract %s from container", src)
+        if not (artifact_dir / "daemon_judgments.jsonl").exists():
+            try:
+                self.launcher.copy_from(
+                    container_id,
+                    _LEGACY_CONTAINER_JUDGMENTS_PATH,
+                    str(artifact_dir / "daemon_judgments.jsonl"),
+                )
+            except Exception:
+                logger.debug(
+                    "Could not extract %s from container",
+                    _LEGACY_CONTAINER_JUDGMENTS_PATH,
+                )

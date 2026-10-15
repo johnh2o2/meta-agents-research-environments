@@ -655,6 +655,44 @@ class TestDaemonStatusFallback:
         assert result["daemon_status"] == {}
 
 
+class TestExtractDaemonLogs:
+    def test_judgments_come_from_the_gaia2_only_log_dir(self, tmp_path: Path) -> None:
+        launcher = _mock_launcher()
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            Path(dst).write_text(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("container-123", tmp_path)
+
+        assert (tmp_path / "daemon_judgments.jsonl").read_text() == (
+            "/var/gaia2/logs/judgments.jsonl"
+        )
+        sources = [call.args[1] for call in launcher.copy_from.call_args_list]
+        assert "/var/gaia2/state/judgments.jsonl" not in sources
+
+    def test_judgments_fall_back_to_the_state_dir_on_older_images(
+        self, tmp_path: Path
+    ) -> None:
+        launcher = _mock_launcher()
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            if src.startswith("/var/gaia2/logs/"):
+                raise RuntimeError("no such file")
+            Path(dst).write_text(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("container-123", tmp_path)
+
+        assert (tmp_path / "daemon_judgments.jsonl").read_text() == (
+            "/var/gaia2/state/judgments.jsonl"
+        )
+
+
 class TestBuildContainerEnv:
     def test_uses_required_judge_config_without_judge_type(self) -> None:
         runner = _make_runner()
