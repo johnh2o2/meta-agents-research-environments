@@ -215,6 +215,7 @@ start_adapter() {
     su -s /usr/bin/bash gaia2 -c "
         export PATH=/usr/local/bin:/usr/bin:/bin
         export GAIA2_STATE_DIR='$STATE_DIR'
+        export GAIA2_STATUS_DIR='$EVENTD_LOG_DIR'
         export GAIA2_ADAPTER_PORT='$ADAPTER_PORT'
         export OPENCLAW_GATEWAY_TOKEN='${OPENCLAW_GATEWAY_TOKEN:-gaia2-notif}'
         export OPENCLAW_HOOKS_TOKEN='${OPENCLAW_HOOKS_TOKEN:-gaia2-hooks}'

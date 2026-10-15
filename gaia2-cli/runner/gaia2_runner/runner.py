@@ -42,7 +42,11 @@ DEFAULT_HEALTH_TIMEOUT = 120
 
 # Container path where the LLM trace is written (read back by _extract_trace_file)
 _CONTAINER_TRACE_PATH = "/tmp/trace.jsonl"
-_CONTAINER_DAEMON_STATUS_PATH = "/var/gaia2/state/daemon_status.json"
+# The verdict copy of daemon_status.json lives in the gaia2-only log dir (out of
+# the agent's reach under the FEH apptainer wrapper); older images wrote it to
+# the group-writable state dir.
+_CONTAINER_DAEMON_STATUS_PATH = "/var/gaia2/logs/daemon_status.json"
+_LEGACY_CONTAINER_DAEMON_STATUS_PATH = "/var/gaia2/state/daemon_status.json"
 # gaia2-eventd writes judgments (oracle events per judged turn) into a
 # gaia2-only directory, out of the agent's reach; older images used the state dir.
 _CONTAINER_JUDGMENTS_PATH = "/var/gaia2/logs/judgments.jsonl"
@@ -827,17 +831,19 @@ class ContainerRunner:
         ) as tmp:
             tmp_path = Path(tmp.name)
         try:
-            self.launcher.copy_from(
-                container_id,
+            for src in (
                 _CONTAINER_DAEMON_STATUS_PATH,
-                str(tmp_path),
-            )
-            return self._read_daemon_status_file(tmp_path)
-        except Exception as exc:
+                _LEGACY_CONTAINER_DAEMON_STATUS_PATH,
+            ):
+                try:
+                    self.launcher.copy_from(container_id, src, str(tmp_path))
+                except Exception:
+                    continue
+                data = self._read_daemon_status_file(tmp_path)
+                if data is not None:
+                    return data
             logger.debug(
-                "Could not copy daemon status from %s: %s",
-                container_id[:12],
-                exc,
+                "Could not copy daemon status from %s", container_id[:12]
             )
             return None
         finally:
@@ -1082,7 +1088,7 @@ class ContainerRunner:
             ("/tmp/entrypoint.log", "entrypoint.log"),
             (_CONTAINER_JUDGMENTS_PATH, "daemon_judgments.jsonl"),
             ("/var/gaia2/state/user_details.json", "user_details.json"),
-            ("/var/gaia2/state/daemon_status.json", "daemon_status.json"),
+            (_CONTAINER_DAEMON_STATUS_PATH, "daemon_status.json"),
             ("/var/gaia2/state/notifications.jsonl", "notifications.jsonl"),
             ("/tmp/faketime.rc", "faketime.rc"),
         ]:
@@ -1101,4 +1107,16 @@ class ContainerRunner:
                 logger.debug(
                     "Could not extract %s from container",
                     _LEGACY_CONTAINER_JUDGMENTS_PATH,
+                )
+        if not (artifact_dir / "daemon_status.json").exists():
+            try:
+                self.launcher.copy_from(
+                    container_id,
+                    _LEGACY_CONTAINER_DAEMON_STATUS_PATH,
+                    str(artifact_dir / "daemon_status.json"),
+                )
+            except Exception:
+                logger.debug(
+                    "Could not extract %s from container",
+                    _LEGACY_CONTAINER_DAEMON_STATUS_PATH,
                 )
