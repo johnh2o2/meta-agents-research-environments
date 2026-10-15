@@ -692,6 +692,30 @@ class TestExtractDaemonLogs:
             "/var/gaia2/state/judgments.jsonl"
         )
 
+    def test_daemon_status_read_prefers_logs_then_state(
+        self, tmp_path: Path
+    ) -> None:
+        launcher = _mock_launcher()
+        seen: list[str] = []
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            seen.append(src)
+            if src == "/var/gaia2/logs/daemon_status.json":
+                Path(dst).write_text(
+                    '{"status": "stopped", "judgment": {"success": false}}'
+                )
+            else:
+                raise FileNotFoundError(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        data = runner._read_daemon_status_from_container("c123")
+
+        assert data is not None
+        assert data["judgment"]["success"] is False
+        assert seen[0] == "/var/gaia2/logs/daemon_status.json"
+
 
 class TestBuildContainerEnv:
     def test_uses_required_judge_config_without_judge_type(self) -> None:

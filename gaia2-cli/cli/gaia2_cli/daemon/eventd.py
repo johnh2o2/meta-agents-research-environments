@@ -693,10 +693,14 @@ class Gaia2EventDaemon:
     # ------------------------------------------------------------------
 
     def _write_status(self, status: str) -> None:
-        """Atomically write daemon_status.json to state_dir.
+        """Atomically write daemon_status.json to log_dir.
 
         The adapter serves this via GET /status so the runner can poll
-        scenario progress without independently counting turns.
+        scenario progress without independently counting turns.  It carries
+        the final judgment (the grade), so it is written to log_dir -- the
+        gaia2-only dir the agent cannot write under the FEH apptainer
+        wrapper -- not the group-writable state dir.  log_dir defaults to
+        state_dir, so non-FEH callers are unchanged.
         """
         nb_turns = self._processor.nb_turns if self._processor else 1
         data = {
@@ -712,7 +716,7 @@ class Gaia2EventDaemon:
                 "success": self._final_judgment.success,
                 "failure_reason": self._final_judgment.failure_reason,
             }
-        status_path = self.state_dir / "daemon_status.json"
+        status_path = self.log_dir / "daemon_status.json"
         tmp_path = status_path.with_suffix(".json.tmp")
         try:
             tmp_path.write_text(json.dumps(data) + "\n")

@@ -731,3 +731,20 @@ class TestLogDir:
         assert kwargs["log_path"] == str(want / "eventd.log")
         assert kwargs["log_dir"] == (str(log_dir) if use_log_dir else None)
         assert kwargs["state_dir"] == str(state_dir)
+
+    def test_status_file_goes_to_log_dir(self, tmp_path):
+        """daemon_status.json carries the grade: it lands in the gaia2-only log dir."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        scenario = tmp_path / "scenario.json"
+        scenario.write_text("{}")
+        d = Gaia2EventDaemon(
+            scenario_path=str(scenario),
+            state_dir=str(state_dir),
+            log_dir=str(log_dir),
+        )
+        d._write_status("complete")
+        assert (log_dir / "daemon_status.json").is_file()
+        assert not (state_dir / "daemon_status.json").exists()
