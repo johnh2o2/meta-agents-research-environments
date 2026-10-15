@@ -716,6 +716,98 @@ class TestExtractDaemonLogs:
         assert data["judgment"]["success"] is False
         assert seen[0] == "/var/gaia2/logs/daemon_status.json"
 
+    def test_daemon_status_read_does_not_fall_back_to_state_on_new_images(
+        self, tmp_path: Path
+    ) -> None:
+        # New image (log dir present) with a missing log-dir verdict copy must
+        # NOT read the agent-writable state copy to decide the grade.
+        launcher = _mock_launcher()
+        seen: list[str] = []
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            seen.append(src)
+            if src == "/var/gaia2/logs":
+                return  # the gaia2-only log dir exists
+            if src == "/var/gaia2/state/daemon_status.json":
+                Path(dst).write_text('{"judgment": {"success": true}}')
+                return
+            raise FileNotFoundError(src)  # no log-dir verdict copy
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        data = runner._read_daemon_status_from_container("c123")
+
+        assert data is None
+        assert "/var/gaia2/state/daemon_status.json" not in seen
+
+    def test_daemon_status_read_falls_back_to_state_on_old_images(
+        self, tmp_path: Path
+    ) -> None:
+        # Old image (no log dir): the state copy is still the only verdict.
+        launcher = _mock_launcher()
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            if src == "/var/gaia2/state/daemon_status.json":
+                Path(dst).write_text('{"judgment": {"success": true}}')
+                return
+            raise FileNotFoundError(src)  # no log dir, no log-dir copy
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        data = runner._read_daemon_status_from_container("c123")
+
+        assert data is not None
+        assert data["judgment"]["success"] is True
+
+    def test_extracted_daemon_status_does_not_fall_back_to_state_on_new_images(
+        self, tmp_path: Path
+    ) -> None:
+        # Same gate for the extraction path (its artifact feeds the verdict):
+        # a missing log-dir copy on a new image must not pull the state copy.
+        launcher = _mock_launcher()
+        seen: list[str] = []
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            seen.append(src)
+            if src == "/var/gaia2/logs":
+                return  # log dir exists
+            if src == "/var/gaia2/logs/daemon_status.json":
+                raise FileNotFoundError(src)  # verdict copy missing
+            if src == "/var/gaia2/state/daemon_status.json":
+                Path(dst).write_text("STATE-VERDICT")
+                return
+            Path(dst).write_text(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("c123", tmp_path)
+
+        assert not (tmp_path / "daemon_status.json").exists()
+        assert "/var/gaia2/state/daemon_status.json" not in seen
+
+    def test_extracted_daemon_status_falls_back_to_state_on_old_images(
+        self, tmp_path: Path
+    ) -> None:
+        launcher = _mock_launcher()
+
+        def copy_from(container_id: str, src: str, dst: str) -> None:
+            if src.startswith("/var/gaia2/logs"):
+                raise FileNotFoundError(src)  # no log dir and no log-dir copy
+            if src == "/var/gaia2/state/daemon_status.json":
+                Path(dst).write_text("STATE-VERDICT")
+                return
+            Path(dst).write_text(src)
+
+        launcher.copy_from.side_effect = copy_from
+        runner = _make_runner(launcher)
+
+        runner._extract_daemon_logs("c123", tmp_path)
+
+        assert (tmp_path / "daemon_status.json").read_text() == "STATE-VERDICT"
+
 
 class TestBuildContainerEnv:
     def test_uses_required_judge_config_without_judge_type(self) -> None:
